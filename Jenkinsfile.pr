@@ -1,0 +1,216 @@
+//****ISSUE****
+// We want to kick off a PR Pipeline Build in Jenkins. As it stands, bitbucket does not support webhooks with requests that are made to Jenkins deployed in an environment with a self-signed certificate. It is recommended to obtain a signed certificate from a known certificate authority.
+//Link to the issue:
+println "PR webhook POST issue documented: https://community.atlassian.com/t5/Bitbucket-questions/Can-bitbucket-webhooks-post-to-https-endpoints-that-use-a-self/qaq-p/140105"
+
+pipeline {
+    agent {
+        label "master"
+    }
+
+    environment {
+        // Global Vars
+        CI_CD_NAMESPACE = "patrick-ci-cd"
+        DEV_NAMESPACE = "patrick-dev"
+
+        // App Vars
+        APP_NAME = sh(script: "oc get bc checksum-validate --template={{.metadata.labels.app}}", returnStdout: true)
+        APPLY_PLAYBOOK_NAME = "apply.yml"
+        APPLIER_TARGET = "apps"
+        APPLIER_SKIP_TAGS = "amq-queues,bitbucket-jenkins-webhook"
+        SOURCE_CONTEXT_DIR = "" // probably not needed
+
+        // Secrets Vars
+        BITBUCKET_SECRET_NAME = "${CI_CD_NAMESPACE}-bitbucket-user-pass"
+        CI_CD_SECRET_NAME = "${CI_CD_NAMESPACE}-ci-cd-secret"
+
+        JENKINS_TAG = "${JOB_NAME}.${BUILD_NUMBER}".replace("/", "-")
+
+        OCP_API_SERVER = "${OPENSHIFT_API_URL}"
+        OCP_TOKEN = readFile('/var/run/secrets/kubernetes.io/serviceaccount/token').trim()
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr:'10'))
+        timeout(time: 15, unit: 'MINUTES')
+        ansiColor('xterm')
+        timestamps()
+    }
+
+    stages {
+        stage("Check that master was pulled for PR Branch"){
+            steps {
+                slackSend "${APP_NAME} Job Started - ${JOB_NAME} ${BUILD_NUMBER} (<${BUILD_URL}|Open>)"
+
+                echo "Setting up environment variables"
+
+                script {
+
+                    timeout(time: 1, unit: 'HOURS') {
+                        slackSend "${env.APP_NAME} Input requested - ${JOB_NAME} ${BUILD_NUMBER} (<${BUILD_URL}input/|Open>)"
+
+                        env.PR_ID = input(
+                                id: 'userInput', message: 'Which PR # do you want to test?', parameters: [
+                                [$class: 'StringParameterDefinition', description: 'PR #', name: 'pr']
+                        ])
+
+                        if (env.PR_ID == null || env.PR_ID == ""){
+                            slackSend color: "warning", message: ":failurepr: ${APP_NAME} Please Enter a PR number - ${JOB_NAME} ${BUILD_NUMBER} (<${BUILD_URL}console|Open>)"
+
+                            error('PR_ID cannot be null or empty')
+                        }
+                    }
+
+                    echo "You chose PR #" + env.PR_ID
+
+                    //****ISSUE****
+                    // We want to be able to list all pull requests via the refs . Bitbucket does not support accessing PR's by referencing the PR's refs as they are not created for PR's in the repository. Below is the workaround implemented to achieve this functionality.
+
+                    println "PR list issue documented: https://bitbucket.org/site/master/issues/5814/repository-refs-for-pull-requests"
+
+                    def value2 = env.GIT_URL.tokenize(':')[1]
+                    env.TEAM_AND_REPO_NAME = value2.tokenize('.')[0]
+                    echo "api url piece that we found is: " + TEAM_AND_REPO_NAME
+
+                    env.PULL_REQUEST = getPRsFromBitBucket(TEAM_AND_REPO_NAME, BITBUCKET_SECRET_NAME)
+
+                    //Debugging pull request info
+                    echo "pull request return info:"
+                    echo env.PULL_REQUEST
+
+                    def json
+                    def matchingPR
+
+                    try {
+                        json = readJSON text: env.PULL_REQUEST
+
+                        for ( item in json.values ){
+                            if ( item.id.toString() == env.PR_ID ) {
+                                matchingPR = item
+                                echo "Matched PR: " + matchingPR
+                            }
+                        }
+
+                        echo "Source Branch: " + matchingPR.source.branch.name
+                        env.SOURCE_BRANCH = matchingPR.source.branch.name
+
+                        echo "Destination Branch: " + matchingPR.destination.branch.name
+                        env.DESTINATION_BRANCH = matchingPR.destination.branch.name
+
+                        env.COMMIT_SHA = matchingPR.source.commit.hash
+
+                        updateBuildState("INPROGRESS", BITBUCKET_SECRET_NAME, COMMIT_SHA)
+
+                    } catch (Exception e){
+                        slackSend color: "warning", message: ":failurepr: ${APP_NAME} uhhh, do you even _know_ your PR!??!?! - ${JOB_NAME} ${BUILD_NUMBER} (<${BUILD_URL}console|Open>)"
+
+                        error('PR_ID failure')
+                    }
+
+                    def status
+
+                    sshagent (credentials: ["${CI_CD_SECRET_NAME}"]) {
+
+                        status = sh script: """
+                            git checkout ${SOURCE_BRANCH}
+                            git pull
+                            git pull origin ${DESTINATION_BRANCH}
+                        """, returnStatus: true
+                    }
+
+                    if (status == 1){
+                        updateBuildState("FAILED", BITBUCKET_SECRET_NAME, COMMIT_SHA)
+
+                        slackSend color: "warning", message: ":failure: ${APP_NAME} Merge Failed! - ${JOB_NAME} ${BUILD_NUMBER} for PR ${PR_ID} (<${BUILD_URL}console|Open>)"
+
+                        error('Merge Failed!')
+                    }
+                }
+            }
+        }
+
+        stage("Test and Build") {
+            agent {
+                node {
+                    label "jenkins-slave-python"
+                }
+            }
+            steps {
+                script{
+
+                    env.NEXUS_ROUTE_URL = getNexusRouteUrl()
+
+                    def status
+
+                    sshagent (credentials: ["${CI_CD_SECRET_NAME}"]) {
+                        status = sh script: """
+                            git checkout ${SOURCE_BRANCH}
+                            git pull
+                            set -e
+                            pwd
+                            ls -al
+                            pip install --user pipenv
+                            pipenv sync
+                            pipenv install --dev
+                            pipenv run behave 
+                        """, returnStatus: true
+                    }
+
+                    if (status == 1){
+                        updateBuildState("FAILED", BITBUCKET_SECRET_NAME, COMMIT_SHA)
+
+                        slackSend color: "warning", message: ":failure: ${APP_NAME} Build Failed! - ${JOB_NAME} ${BUILD_NUMBER} for PR ${PR_ID} (<${BUILD_URL}console|Open>)"
+
+                        error('Build Failed!')
+                    }
+                }
+
+            }
+        }
+
+        stage("Bake Image") {
+            steps {
+                script{
+                    // Set the GIT_BRANCH to the source branch of the PR that way it can build and deploy your branch to dev
+                    
+
+                    patchBuildConfigOutputLabels(env, env.SOURCE_BRANCH)
+
+                    openshift.withCluster () {
+                        def buildSelector = openshift.startBuild( "${APP_NAME}" )
+                        buildSelector.logs('-f')
+                    }
+                }
+            }
+        }
+
+        stage('Deploy: Dev'){
+            agent { label 'jenkins-slave-ansible'}
+            steps {
+                script{
+                    applyAnsibleInventory( "${APPLIER_TARGET}", "app-deploy-${DEV_NAMESPACE}", "${APPLIER_SKIP_TAGS}" )
+                    timeout(5) { // in minutes
+                        openshift.loglevel(3)
+                        promoteImageWithinCluster( "${APP_NAME}", "${CI_CD_NAMESPACE}", "${DEV_NAMESPACE}", "${JENKINS_TAG}" )
+                        verifyDeployment("${APP_NAME}", "${DEV_NAMESPACE}")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            updateBuildState("SUCCESSFUL", BITBUCKET_SECRET_NAME, COMMIT_SHA)
+
+            slackSend color: "good", message: ":success: ${APP_NAME} Build Completed - ${JOB_NAME} ${BUILD_NUMBER} for PR ${PR_ID} (<${BUILD_URL}|Open>)"
+        }
+
+        failure {
+            updateBuildState("FAILED", BITBUCKET_SECRET_NAME, COMMIT_SHA)
+
+            slackSend color: "warning", message: ":failure: ${APP_NAME} Merge Failed! - ${JOB_NAME} ${BUILD_NUMBER} for PR ${PR_ID} (<${BUILD_URL}console|Open>)"
+        }
+    }
+
+}

@@ -1,0 +1,16 @@
+# This is the Ansible Galaxy requirements file to pull in the correct roles
+# to support the operation of CASL provisioning/runs. 
+
+# From 'openshift-applier'
+- src: https://github.com/redhat-cop/openshift-applier
+  scm: git
+  version: v2.0.3
+  name: openshift-applier
+- src: https://github.com/pcarney8/amq-queues
+  scm: git
+  version: v1.0
+  name: amq-queues
+- src: https://github.com/pcarney8/bitbucket-jenkins-webhook
+  scm: git
+  version: v1.0
+  name: bitbucket-jenkins-webhook

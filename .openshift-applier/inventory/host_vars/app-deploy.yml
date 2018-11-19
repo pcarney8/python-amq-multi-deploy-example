@@ -1,0 +1,60 @@
+---
+ansible_connection: local
+
+deploy:
+  metadata:
+    NAME: "{{ app_name }}-metadata"
+    SHAREDFS_CONTEXT: "{{ NAMESPACE }}"
+    EVENT_SOURCE: granule.validated
+    EVENT_DESTINATION: "{{ metadata_success_queue }}"
+    FILE_TYPE: METADATA
+    IMAGE_STREAM_NAME: "{{ app_name }}"
+  science:
+    NAME: "{{ app_name }}-science"
+    SHAREDFS_CONTEXT: "{{ NAMESPACE }}"
+    EVENT_SOURCE: granule.prioritized
+    EVENT_DESTINATION: "{{ science_success_queue }}"
+    FILE_TYPE: SCIENCE
+    IMAGE_STREAM_NAME: "{{ app_name }}"
+amq:
+  namespaces:
+    - '{{ NAMESPACE }}'
+  domain: "{{ apps_sub_domain | default('apps') }}.{{ base_openshift_url }}"
+  admin:
+    user: "{{ amq_admin_username }}"
+    password: "{{ amq_admin_password }}"
+  diverts:
+    - name: "divert-events.{{ app_name }}-metadata"
+      address: "{{ metadata_success_queue }}"
+      forwarding_address: "{{ event_queue }}"
+    - name: "divert-events.{{ app_name }}-science"
+      address: "{{ science_success_queue }}"
+      forwarding_address: "{{ event_queue }}"
+  queues:
+    - address: "{{ metadata_success_queue }}"
+      name: "{{ metadata_success_queue }}"
+      durable: true
+    - address: "{{ science_success_queue }}"
+      name: "{{ science_success_queue }}"
+      durable: true
+
+openshift_cluster_content:
+- object: app-deploy-{{ NAMESPACE }}
+  content:
+  - name: "{{ app_name }}-deploy-{{ NAMESPACE }}-metadata"
+    template: "https://raw.githubusercontent.com/rht-labs/openshift-templates/master/app-deploy/template-checksum-pvc.yml"
+    params_from_vars: "{{ deploy.metadata }}"
+    namespace: "{{ NAMESPACE }}"
+    tags:
+    - app-deploy
+    - app-deploy-{{ NAMESPACE }}
+    - app-deploy-{{ NAMESPACE }}-metadata
+  - name: "{{ app_name }}-deploy-{{ NAMESPACE }}-science"
+    template: "https://raw.githubusercontent.com/rht-labs/openshift-templates/master/app-deploy/template-checksum-pvc.yml"
+    params_from_vars: "{{ deploy.science }}"
+    namespace: "{{ NAMESPACE }}"
+    tags:
+    - app-deploy
+    - app-deploy-{{ NAMESPACE }}
+    - app-deploy-{{ NAMESPACE }}-science
+

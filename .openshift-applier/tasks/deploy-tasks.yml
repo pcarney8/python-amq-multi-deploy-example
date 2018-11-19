@@ -1,0 +1,18 @@
+---
+- include_vars: "{{ playbook_dir }}/secrets/user-pass.yml"
+  tags:
+    - always
+
+- name: "Set dev namespace"
+  set_fact:
+    NAMESPACE: "{{ item }}"
+
+- include_role:
+    name: roles/amq-queues
+  tags:
+    - amq-queues
+
+- include_role:
+    name: openshift-applier/roles/openshift-applier
+  tags:
+    - openshift-applier

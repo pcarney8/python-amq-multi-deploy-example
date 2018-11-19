@@ -1,0 +1,21 @@
+[[source]]
+url = "https://nexus-patrick-ci-cd.apps.patrick.rht-labs.com/repository/pypi-all/"
+verify_ssl = true
+name = "nexus"
+
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+python-qpid-proton = "*"
+logmatic-python = "*"
+
+[dev-packages]
+"flake8" = "*"
+pytest = "*"
+behave = "*"
+
+[requires]
+python_version = "3.6"

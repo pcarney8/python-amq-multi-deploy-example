@@ -1,0 +1,19 @@
+team_name: patricklabs
+base_openshift_url: patrick.rht-labs.com
+app_name: checksum-validate
+event_queue: events
+metadata_success_queue: metadata_file.validated
+science_success_queue: science_file.validated
+
+ci_cd:
+  NAMESPACE: "{{ ci_cd_namespace | default('patrick-ci-cd') }}"
+  NAMESPACE_DISPLAY_NAME: "patrick CI/CD"
+  SECRET_NAME: ci-cd-secret
+
+dev:
+  NAMESPACE: "{{ dev_namespace | default('patrick-dev') }}"
+  NAMESPACE_DISPLAY_NAME: "patrick Dev"
+
+test:
+  NAMESPACE: "{{ test_namespace | default('patrick-test') }}"
+  NAMESPACE_DISPLAY_NAME: "patrick Test"

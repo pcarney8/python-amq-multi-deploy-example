@@ -1,0 +1,25 @@
+---
+- name: Build and Deploy amq-test
+  hosts: "{{ target }}"
+  tasks:
+    - name: builds
+      block:
+        - include_vars: "{{ playbook_dir }}/secrets/user-pass.yml"
+          tags:
+            - always
+        - include_role:
+            name: openshift-applier/roles/openshift-applier
+          tags:
+            - openshift-applier
+        - include_role:
+            name: roles/bitbucket-jenkins-webhook
+          tags:
+            - bitbucket-jenkins-webhook
+      when:
+        - inventory_hostname == "app-build"
+    - name: deploys
+      include_tasks: tasks/deploy-tasks.yml
+      when: inventory_hostname == "app-deploy"
+      with_items:
+        - "{{ dev.NAMESPACE }}"
+        - "{{ test.NAMESPACE }}"
